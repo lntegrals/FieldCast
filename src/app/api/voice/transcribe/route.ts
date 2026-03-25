@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { normalizePickupTime } from "@/lib/utils";
-import OpenAI, { toFile } from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-function getOpenAI() {
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+function getGemini() {
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+  return genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 }
 
-const EXTRACTION_SYSTEM_PROMPT = `You are a farm produce listing assistant. Extract structured data from farmer voice notes. Return JSON with:
+const EXTRACTION_PROMPT = `You are a farm produce listing assistant. Listen to this audio recording from a farmer describing their available harvest.
+
+First, transcribe what the farmer said. Then extract structured listing data from the transcription.
+
+Return ONLY valid JSON (no markdown fences) with these fields:
+- transcript (string): The raw transcription of the audio
 - title (string): A concise buyer-friendly title, e.g. "Fresh Organic Tomatoes - 20 lbs"
 - category (string|null): produce category like "vegetables", "fruits", "herbs", "dairy", "eggs", "meat", etc.
 - product_name (string): the product name, e.g. "Tomatoes"
@@ -22,9 +28,9 @@ const EXTRACTION_SYSTEM_PROMPT = `You are a farm produce listing assistant. Extr
 - pickup_start_time (string|null): HH:MM 24h format
 - pickup_end_time (string|null): HH:MM 24h format
 - ai_confidence (number): 0-1 confidence score for the overall extraction
-- missing_fields (string[]): array of field names that couldn't be determined from the transcript
+- missing_fields (string[]): array of field names that couldn't be determined from the audio
 
-Generate a buyer-friendly description even if the farmer didn't explicitly describe the produce. If information is missing, leave the field null and include it in missing_fields. Return ONLY valid JSON, no markdown fences.`;
+Generate a buyer-friendly description even if the farmer didn't explicitly describe the produce. If information is missing, leave the field null and include it in missing_fields.`;
 
 export async function POST(request: NextRequest) {
   try {
@@ -110,66 +116,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Transcribe audio with OpenAI Whisper
+    // Use Gemini to transcribe audio AND extract structured data in one call
     let transcript: string;
-    try {
-      const openai = getOpenAI();
-      const file = await toFile(buffer, "recording.webm", {
-        type: audioFile.type || "audio/webm",
-      });
-      const transcription = await openai.audio.transcriptions.create({
-        model: "whisper-1",
-        file,
-      });
-      transcript = transcription.text;
-    } catch (transcribeError) {
-      console.error("Transcription error:", transcribeError);
+    let extractedData: Record<string, unknown>;
 
-      // Update voice note to failed
+    try {
+      const model = getGemini();
+      const base64Audio = buffer.toString("base64");
+
+      const result = await model.generateContent([
+        { text: EXTRACTION_PROMPT },
+        {
+          inlineData: {
+            mimeType: audioFile.type || "audio/webm",
+            data: base64Audio,
+          },
+        },
+      ]);
+
+      const responseText = result.response.text();
+      // Strip markdown code fences if present
+      const cleaned = responseText.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+      const parsed = JSON.parse(cleaned);
+
+      transcript = parsed.transcript || "";
+      extractedData = parsed;
+    } catch (aiError) {
+      console.error("Gemini transcription/extraction error:", aiError);
+
       await serviceClient
         .from("voice_notes")
         .update({ transcription_status: "failed" })
         .eq("id", voiceNote.id);
 
       return NextResponse.json(
-        { error: "Failed to transcribe audio" },
-        { status: 500 }
-      );
-    }
-
-    // Extract structured data with GPT-4o-mini
-    let extractedData: Record<string, unknown>;
-    try {
-      const completion = await getOpenAI().chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: `Transcript from farmer voice note:\n\n"${transcript}"`,
-          },
-        ],
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-      });
-
-      const content = completion.choices[0]?.message?.content;
-      if (!content) throw new Error("Empty AI response");
-      extractedData = JSON.parse(content);
-    } catch (aiError) {
-      console.error("AI extraction error:", aiError);
-
-      // Still save the transcript even if extraction fails
-      await serviceClient
-        .from("voice_notes")
-        .update({
-          transcript_raw: transcript,
-          transcription_status: "completed",
-        })
-        .eq("id", voiceNote.id);
-
-      return NextResponse.json(
-        { error: "Failed to extract listing data from transcript" },
+        { error: "Failed to transcribe and extract listing data" },
         { status: 500 }
       );
     }

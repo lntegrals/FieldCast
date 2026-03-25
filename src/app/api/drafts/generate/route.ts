@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { normalizePickupTime } from "@/lib/utils";
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-function getOpenAI() {
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+function getGemini() {
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+  return genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 }
 
-const EXTRACTION_SYSTEM_PROMPT = `You are a farm produce listing assistant. Extract structured data from farmer voice notes. Return JSON with:
+const EXTRACTION_PROMPT = `You are a farm produce listing assistant. Extract structured data from farmer voice notes. Return ONLY valid JSON (no markdown fences) with:
 - title (string): A concise buyer-friendly title, e.g. "Fresh Organic Tomatoes - 20 lbs"
 - category (string|null): produce category like "vegetables", "fruits", "herbs", "dairy", "eggs", "meat", etc.
 - product_name (string): the product name, e.g. "Tomatoes"
@@ -24,7 +25,7 @@ const EXTRACTION_SYSTEM_PROMPT = `You are a farm produce listing assistant. Extr
 - ai_confidence (number): 0-1 confidence score for the overall extraction
 - missing_fields (string[]): array of field names that couldn't be determined from the transcript
 
-Generate a buyer-friendly description even if the farmer didn't explicitly describe the produce. If information is missing, leave the field null and include it in missing_fields. Return ONLY valid JSON, no markdown fences.`;
+Generate a buyer-friendly description even if the farmer didn't explicitly describe the produce. If information is missing, leave the field null and include it in missing_fields.`;
 
 export async function POST(request: NextRequest) {
   try {
@@ -79,29 +80,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Re-run AI extraction on the edited transcript
-    const completion = await getOpenAI().chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `Transcript from farmer voice note:\n\n"${transcript}"`,
-        },
-      ],
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-    });
+    // Re-run AI extraction on the edited transcript using Gemini
+    const model = getGemini();
+    const result = await model.generateContent([
+      { text: `${EXTRACTION_PROMPT}\n\nTranscript from farmer voice note:\n\n"${transcript}"` },
+    ]);
 
-    const content = completion.choices[0]?.message?.content;
-    if (!content) {
+    const responseText = result.response.text();
+    const cleaned = responseText.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+
+    if (!cleaned) {
       return NextResponse.json(
         { error: "AI extraction returned empty response" },
         { status: 500 }
       );
     }
 
-    const extractedData = JSON.parse(content);
+    const extractedData = JSON.parse(cleaned);
 
     // Update the draft with new extracted data
     const { data: updatedDraft, error: updateError } = await supabase
