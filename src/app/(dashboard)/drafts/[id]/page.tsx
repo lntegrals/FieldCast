@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { cn, formatPrice, formatDate } from "@/lib/utils";
+import { cn, formatPrice, formatDate, extractTimeHHMM, formatPickupTime, normalizePickupTime } from "@/lib/utils";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
@@ -125,8 +125,8 @@ export default function DraftReviewPage() {
       harvest_date: d.harvest_date,
       fulfillment_type: d.fulfillment_type,
       pickup_location: d.pickup_location,
-      pickup_start_time: d.pickup_start_time,
-      pickup_end_time: d.pickup_end_time,
+      pickup_start_time: extractTimeHHMM(d.pickup_start_time) || d.pickup_start_time,
+      pickup_end_time: extractTimeHHMM(d.pickup_end_time) || d.pickup_end_time,
     });
   }
 
@@ -156,8 +156,8 @@ export default function DraftReviewPage() {
           harvest_date: editForm.harvest_date,
           fulfillment_type: editForm.fulfillment_type as FulfillmentType,
           pickup_location: editForm.pickup_location,
-          pickup_start_time: editForm.pickup_start_time,
-          pickup_end_time: editForm.pickup_end_time,
+          pickup_start_time: normalizePickupTime(editForm.pickup_start_time),
+          pickup_end_time: normalizePickupTime(editForm.pickup_end_time),
           missing_fields_json: [],
           updated_at: new Date().toISOString(),
         })
@@ -799,7 +799,9 @@ export default function DraftReviewPage() {
 
           <FieldRow label="Pickup Times" fieldName="pickup_start_time">
             {draft.pickup_start_time && draft.pickup_end_time ? (
-              `${draft.pickup_start_time} - ${draft.pickup_end_time}`
+              `${formatPickupTime(draft.pickup_start_time)} - ${formatPickupTime(draft.pickup_end_time)}`
+            ) : draft.pickup_start_time ? (
+              `From ${formatPickupTime(draft.pickup_start_time)}`
             ) : (
               <span className="text-[#2E2E2E]/30 italic">Not specified</span>
             )}
