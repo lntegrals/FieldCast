@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { normalizePickupTime } from "@/lib/utils";
 import OpenAI from "openai";
 
@@ -40,8 +40,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    // Use service client for storage + DB writes (bypasses RLS)
+    const serviceClient = await createServiceClient();
+
     // Get user's farm
-    const { data: farm, error: farmError } = await supabase
+    const { data: farm, error: farmError } = await serviceClient
       .from("farms")
       .select("id")
       .eq("owner_user_id", user.id)
@@ -70,7 +73,7 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await audioFile.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const { error: uploadError } = await supabase.storage
+    const { error: uploadError } = await serviceClient.storage
       .from("voice-notes")
       .upload(fileName, buffer, {
         contentType: audioFile.type || "audio/webm",
@@ -87,10 +90,10 @@ export async function POST(request: NextRequest) {
 
     const {
       data: { publicUrl },
-    } = supabase.storage.from("voice-notes").getPublicUrl(fileName);
+    } = serviceClient.storage.from("voice-notes").getPublicUrl(fileName);
 
     // Create voice_note record with status "processing"
-    const { data: voiceNote, error: vnError } = await supabase
+    const { data: voiceNote, error: vnError } = await serviceClient
       .from("voice_notes")
       .insert({
         farm_id: farm.id,
@@ -124,7 +127,7 @@ export async function POST(request: NextRequest) {
       console.error("Transcription error:", transcribeError);
 
       // Update voice note to failed
-      await supabase
+      await serviceClient
         .from("voice_notes")
         .update({ transcription_status: "failed" })
         .eq("id", voiceNote.id);
@@ -158,7 +161,7 @@ export async function POST(request: NextRequest) {
       console.error("AI extraction error:", aiError);
 
       // Still save the transcript even if extraction fails
-      await supabase
+      await serviceClient
         .from("voice_notes")
         .update({
           transcript_raw: transcript,
@@ -173,7 +176,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create listing_draft
-    const { data: draft, error: draftError } = await supabase
+    const { data: draft, error: draftError } = await serviceClient
       .from("listing_drafts")
       .insert({
         farm_id: farm.id,
@@ -208,7 +211,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Update voice note with transcript and completed status
-    await supabase
+    await serviceClient
       .from("voice_notes")
       .update({
         transcript_raw: transcript,
