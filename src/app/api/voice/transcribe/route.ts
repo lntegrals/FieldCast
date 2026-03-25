@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { normalizePickupTime } from "@/lib/utils";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 
 function getOpenAI() {
   return new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
@@ -111,15 +111,15 @@ export async function POST(request: NextRequest) {
     }
 
     // Transcribe audio with OpenAI Whisper
-    const audioBlob = new File([buffer], "recording.webm", {
-      type: audioFile.type || "audio/webm",
-    });
-
     let transcript: string;
     try {
-      const transcription = await getOpenAI().audio.transcriptions.create({
+      const openai = getOpenAI();
+      const file = await toFile(buffer, "recording.webm", {
+        type: audioFile.type || "audio/webm",
+      });
+      const transcription = await openai.audio.transcriptions.create({
         model: "whisper-1",
-        file: audioBlob,
+        file,
       });
       transcript = transcription.text;
     } catch (transcribeError) {
