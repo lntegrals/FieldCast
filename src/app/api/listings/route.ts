@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
+/** Buyer-safe listing columns — no internal/sensitive fields. */
+const LISTING_COLUMNS = "id, farm_id, title, category, product_name, description, quantity_available, quantity_unit, price_amount, price_unit, harvest_date, fulfillment_type, pickup_location, pickup_start_time, pickup_end_time, published_at, expires_at";
+const FARM_COLUMNS = "id, farm_name, city, state";
+
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
@@ -22,7 +26,7 @@ export async function GET(request: NextRequest) {
 
     let query = supabase
       .from("listings")
-      .select("*, farm:farms(id, farm_name, city, state)", { count: "exact" });
+      .select(`${LISTING_COLUMNS}, farm:farms(${FARM_COLUMNS})`, { count: "exact" });
 
     if (farmId) {
       query = query.eq("farm_id", farmId);

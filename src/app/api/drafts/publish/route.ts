@@ -1,19 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceClient } from "@/lib/supabase/server";
+import { requireFarmerWithFarm } from "@/lib/authz";
+import { getDispatcher } from "@/lib/notifications/dispatcher";
 
 export async function POST(request: NextRequest) {
   try {
+    // --- RBAC: require authenticated farmer with farm ---
+    const auth = await requireFarmerWithFarm();
+    if (!auth.ok) return auth.response;
+
     const supabase = await createClient();
-
-    // Authenticate user
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const serviceClient = await createServiceClient();
 
     const body = await request.json();
     const { draftId } = body;
@@ -25,10 +22,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get the draft
+    // Get the draft — explicit columns, no wildcard
     const { data: draft, error: draftError } = await supabase
       .from("listing_drafts")
-      .select("*")
+      .select(
+        "id, farm_id, title, category, product_name, description, quantity_available, quantity_unit, price_amount, price_unit, harvest_date, fulfillment_type, pickup_location, pickup_start_time, pickup_end_time, status"
+      )
       .eq("id", draftId)
       .single();
 
@@ -40,14 +39,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify farm ownership
-    const { data: farm, error: farmError } = await supabase
-      .from("farms")
-      .select("id")
-      .eq("id", draft.farm_id)
-      .eq("owner_user_id", user.id)
-      .single();
-
-    if (farmError || !farm) {
+    if (draft.farm_id !== auth.user.farmId) {
       return NextResponse.json(
         { error: "You don't have permission to publish this draft" },
         { status: 403 }
@@ -64,8 +56,8 @@ export async function POST(request: NextRequest) {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000); // 48 hours
 
-    // Create the listing from draft data
-    const { data: listing, error: listingError } = await supabase
+    // Create the listing
+    const { data: listing, error: listingError } = await serviceClient
       .from("listings")
       .insert({
         farm_id: draft.farm_id,
@@ -103,62 +95,39 @@ export async function POST(request: NextRequest) {
       .update({ status: "published", updated_at: now.toISOString() })
       .eq("id", draftId);
 
-    // Trigger notifications: find matching buyer subscriptions
+    // --- Notification dispatch with retry + state machine ---
     let notifiedCount = 0;
+    let failedCount = 0;
 
     try {
-      let subscriptionQuery = supabase
-        .from("buyer_subscriptions")
-        .select("id, user_id, notification_channel, category, product_keyword")
-        .eq("farm_id", draft.farm_id)
-        .eq("is_active", true);
+      // Get farm name for notifications
+      const { data: farm } = await serviceClient
+        .from("farms")
+        .select("farm_name")
+        .eq("id", draft.farm_id)
+        .single();
 
-      const { data: subscriptions } = await subscriptionQuery;
+      const dispatcher = getDispatcher();
+      const result = await dispatcher.publishAndNotify(
+        serviceClient,
+        listing.id,
+        draft.farm_id,
+        farm?.farm_name ?? "Farm",
+        draft.title,
+        draft.category,
+        draft.product_name
+      );
 
-      if (subscriptions && subscriptions.length > 0) {
-        // Filter subscriptions by category and product keyword match
-        const matchingSubs = subscriptions.filter((sub) => {
-          if (sub.category && draft.category && sub.category !== draft.category) {
-            return false;
-          }
-          if (
-            sub.product_keyword &&
-            draft.product_name &&
-            !draft.product_name
-              .toLowerCase()
-              .includes(sub.product_keyword.toLowerCase())
-          ) {
-            return false;
-          }
-          return true;
-        });
-
-        if (matchingSubs.length > 0) {
-          const notificationRecords = matchingSubs.map((sub) => ({
-            subscription_id: sub.id,
-            listing_id: listing.id,
-            channel: sub.notification_channel,
-            delivery_status: "pending",
-          }));
-
-          const { data: notifications, error: notifError } = await supabase
-            .from("notifications")
-            .insert(notificationRecords)
-            .select("id");
-
-          if (!notifError && notifications) {
-            notifiedCount = notifications.length;
-          }
-        }
-      }
+      notifiedCount = result.notifiedCount;
+      failedCount = result.failedCount;
     } catch (notifErr) {
-      // Log but don't fail the publish if notifications error
-      console.error("Notification creation error:", notifErr);
+      console.error("Notification dispatch error:", notifErr);
     }
 
     return NextResponse.json({
       listingId: listing.id,
       notifiedCount,
+      failedCount,
     });
   } catch (err) {
     console.error("Unexpected error in drafts/publish:", err);

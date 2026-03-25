@@ -32,10 +32,10 @@ export default async function DashboardPage() {
     redirect("/setup-farm");
   }
 
-  // Fetch active listings (not expired)
+  // Fetch active listings (not expired) — explicit columns
   const { data: activeListings } = await supabase
     .from("listings")
-    .select("*")
+    .select("id, title, quantity_available, quantity_unit, price_amount, price_unit, published_at, expires_at")
     .eq("farm_id", farm.id)
     .gte("expires_at", new Date().toISOString())
     .order("published_at", { ascending: false });
@@ -46,10 +46,10 @@ export default async function DashboardPage() {
     .select("id", { count: "exact", head: true })
     .eq("farm_id", farm.id);
 
-  // Fetch pending drafts
+  // Fetch pending drafts — explicit columns
   const { data: pendingDrafts } = await supabase
     .from("listing_drafts")
-    .select("*")
+    .select("id, title, product_name, status, updated_at")
     .eq("farm_id", farm.id)
     .in("status", ["draft", "review"])
     .order("updated_at", { ascending: false })

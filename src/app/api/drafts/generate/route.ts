@@ -1,45 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { requireFarmerWithFarm } from "@/lib/authz";
+import { extractFromText } from "@/lib/ai/extract";
 import { normalizePickupTime } from "@/lib/utils";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
-function getGemini() {
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-  return genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-}
-
-const EXTRACTION_PROMPT = `You are a farm produce listing assistant. Extract structured data from farmer voice notes. Return ONLY valid JSON (no markdown fences) with:
-- title (string): A concise buyer-friendly title, e.g. "Fresh Organic Tomatoes - 20 lbs"
-- category (string|null): produce category like "vegetables", "fruits", "herbs", "dairy", "eggs", "meat", etc.
-- product_name (string): the product name, e.g. "Tomatoes"
-- description (string|null): A 1-2 sentence buyer-friendly description. Generate this from context even if not explicitly stated.
-- quantity_available (number|null): numeric quantity
-- quantity_unit (string|null): unit like "lbs", "bushels", "dozen", "bunches"
-- price_amount (number|null): price as a number
-- price_unit (string|null): pricing unit like "lb", "each", "dozen", "bushel"
-- harvest_date (string|null): ISO date string if mentioned, otherwise null
-- fulfillment_type (string|null): "pickup", "delivery", or "both"
-- pickup_location (string|null): location if mentioned
-- pickup_start_time (string|null): HH:MM 24h format
-- pickup_end_time (string|null): HH:MM 24h format
-- ai_confidence (number): 0-1 confidence score for the overall extraction
-- missing_fields (string[]): array of field names that couldn't be determined from the transcript
-
-Generate a buyer-friendly description even if the farmer didn't explicitly describe the produce. If information is missing, leave the field null and include it in missing_fields.`;
 
 export async function POST(request: NextRequest) {
   try {
+    // --- RBAC: require authenticated farmer with farm ---
+    const auth = await requireFarmerWithFarm();
+    if (!auth.ok) return auth.response;
+
     const supabase = await createClient();
-
-    // Authenticate user
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
 
     const body = await request.json();
     const { draftId, transcript } = body;
@@ -51,7 +22,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get the draft and verify ownership
+    // Get the draft — only select needed columns
     const { data: draft, error: draftError } = await supabase
       .from("listing_drafts")
       .select("id, farm_id")
@@ -66,58 +37,38 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify farm ownership
-    const { data: farm, error: farmError } = await supabase
-      .from("farms")
-      .select("id")
-      .eq("id", draft.farm_id)
-      .eq("owner_user_id", user.id)
-      .single();
-
-    if (farmError || !farm) {
+    if (draft.farm_id !== auth.user.farmId) {
       return NextResponse.json(
         { error: "You don't have permission to update this draft" },
         { status: 403 }
       );
     }
 
-    // Re-run AI extraction on the edited transcript using Gemini
-    const model = getGemini();
-    const result = await model.generateContent([
-      { text: `${EXTRACTION_PROMPT}\n\nTranscript from farmer voice note:\n\n"${transcript}"` },
-    ]);
+    // --- AI extraction with validation & retry ---
+    const { data: extracted, metrics } = await extractFromText(transcript);
 
-    const responseText = result.response.text();
-    const cleaned = responseText.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
-
-    if (!cleaned) {
-      return NextResponse.json(
-        { error: "AI extraction returned empty response" },
-        { status: 500 }
-      );
-    }
-
-    const extractedData = JSON.parse(cleaned);
+    console.log(`[AI Metrics] text re-extraction:`, JSON.stringify(metrics));
 
     // Update the draft with new extracted data
     const { data: updatedDraft, error: updateError } = await supabase
       .from("listing_drafts")
       .update({
-        title: extractedData.title || "Untitled Listing",
-        category: extractedData.category,
-        product_name: extractedData.product_name || "Unknown Product",
-        description: extractedData.description,
-        quantity_available: extractedData.quantity_available,
-        quantity_unit: extractedData.quantity_unit,
-        price_amount: extractedData.price_amount,
-        price_unit: extractedData.price_unit,
-        harvest_date: extractedData.harvest_date,
-        fulfillment_type: extractedData.fulfillment_type,
-        pickup_location: extractedData.pickup_location,
-        pickup_start_time: normalizePickupTime(extractedData.pickup_start_time),
-        pickup_end_time: normalizePickupTime(extractedData.pickup_end_time),
+        title: extracted.title,
+        category: extracted.category,
+        product_name: extracted.product_name,
+        description: extracted.description,
+        quantity_available: extracted.quantity_available,
+        quantity_unit: extracted.quantity_unit,
+        price_amount: extracted.price_amount,
+        price_unit: extracted.price_unit,
+        harvest_date: extracted.harvest_date,
+        fulfillment_type: extracted.fulfillment_type,
+        pickup_location: extracted.pickup_location,
+        pickup_start_time: normalizePickupTime(extracted.pickup_start_time),
+        pickup_end_time: normalizePickupTime(extracted.pickup_end_time),
         status: "review",
-        ai_confidence: extractedData.ai_confidence,
-        missing_fields_json: extractedData.missing_fields,
+        ai_confidence: extracted.ai_confidence,
+        missing_fields_json: extracted.missing_fields,
         updated_at: new Date().toISOString(),
       })
       .eq("id", draftId)

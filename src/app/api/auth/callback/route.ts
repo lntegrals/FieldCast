@@ -5,7 +5,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const role = searchParams.get("role") || "buyer";
+  const requestedRole = searchParams.get("role") || "buyer";
 
   if (!code) {
     return NextResponse.redirect(`${origin}/login?error=missing_code`);
@@ -39,7 +39,6 @@ export async function GET(request: NextRequest) {
 
   const user = data.session.user;
 
-  // Ensure user profile exists with correct role
   try {
     const serviceClient = await createServiceClient();
 
@@ -50,8 +49,10 @@ export async function GET(request: NextRequest) {
       .eq("id", user.id)
       .maybeSingle();
 
+    let effectiveRole: string;
+
     if (!existingUser) {
-      // Create user profile
+      // First-time user: create profile with requested role
       await serviceClient.from("users").insert({
         id: user.id,
         email: user.email!,
@@ -60,19 +61,17 @@ export async function GET(request: NextRequest) {
           user.user_metadata?.name ||
           user.email?.split("@")[0] ||
           "User",
-        role,
+        role: requestedRole,
       });
-    } else if (existingUser.role !== role) {
-      // Reconcile role if user selected a different one
-      await serviceClient
-        .from("users")
-        .update({ role })
-        .eq("id", user.id);
+      effectiveRole = requestedRole;
+    } else {
+      // Existing user: role is immutable. Use stored role.
+      // This prevents role escalation via URL parameter tampering.
+      effectiveRole = existingUser.role;
     }
 
-    // Redirect based on role - farmer goes to farm setup or dashboard
-    if (role === "farmer") {
-      // Check if farmer already has a farm
+    // Redirect based on effective role
+    if (effectiveRole === "farmer") {
       const { data: existingFarm } = await serviceClient
         .from("farms")
         .select("id")
@@ -80,7 +79,6 @@ export async function GET(request: NextRequest) {
         .maybeSingle();
 
       if (!existingFarm) {
-        // Redirect to farm setup page where we'll read localStorage data
         return overrideRedirect(response, `${origin}/setup-farm`);
       }
 
@@ -90,15 +88,13 @@ export async function GET(request: NextRequest) {
     return overrideRedirect(response, `${origin}/listings`);
   } catch (err) {
     console.error("Post-auth setup error:", err);
-    // Still redirect even if profile creation fails
-    const redirectTo = role === "buyer" ? "/listings" : "/dashboard";
+    const redirectTo = requestedRole === "buyer" ? "/listings" : "/dashboard";
     return overrideRedirect(response, `${origin}${redirectTo}`);
   }
 }
 
 function overrideRedirect(response: NextResponse, url: string) {
   const redirectResponse = NextResponse.redirect(url);
-  // Copy cookies from the original response
   response.cookies.getAll().forEach((cookie) => {
     redirectResponse.cookies.set(cookie.name, cookie.value);
   });

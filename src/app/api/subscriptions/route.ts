@@ -1,24 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { requireRole } from "@/lib/authz";
 
-// GET: return the authenticated user's subscriptions with farm info
+// GET: return the authenticated buyer's subscriptions with farm info
 export async function GET() {
   try {
+    // --- RBAC: require buyer role ---
+    const auth = await requireRole("buyer");
+    if (!auth.ok) return auth.response;
+
     const supabase = await createClient();
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
 
     const { data: subscriptions, error } = await supabase
       .from("buyer_subscriptions")
-      .select("*, farm:farms(id, farm_name, city, state)")
-      .eq("user_id", user.id)
+      .select("id, farm_id, category, product_keyword, notification_channel, is_active, created_at, farm:farms(id, farm_name, city, state)")
+      .eq("user_id", auth.user.id)
       .eq("is_active", true)
       .order("created_at", { ascending: false });
 
@@ -40,22 +36,17 @@ export async function GET() {
   }
 }
 
-// POST: create a new subscription
+// POST: create a new subscription (buyer only)
 export async function POST(request: NextRequest) {
   try {
+    // --- RBAC: require buyer role ---
+    const auth = await requireRole("buyer");
+    if (!auth.ok) return auth.response;
+
     const supabase = await createClient();
 
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const body = await request.json();
-    // Accept both camelCase and snake_case field names
+    // Accept both camelCase and snake_case
     const farmId = body.farmId || body.farm_id;
     const category = body.category;
     const productKeyword = body.productKeyword ?? body.product_keyword;
@@ -75,7 +66,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify the farm exists
+    // Verify the farm exists — only select id
     const { data: farm, error: farmError } = await supabase
       .from("farms")
       .select("id")
@@ -93,7 +84,7 @@ export async function POST(request: NextRequest) {
     let dupQuery = supabase
       .from("buyer_subscriptions")
       .select("id")
-      .eq("user_id", user.id)
+      .eq("user_id", auth.user.id)
       .eq("farm_id", farmId)
       .eq("is_active", true);
 
@@ -121,14 +112,14 @@ export async function POST(request: NextRequest) {
     const { data: subscription, error: insertError } = await supabase
       .from("buyer_subscriptions")
       .insert({
-        user_id: user.id,
+        user_id: auth.user.id,
         farm_id: farmId,
         category: category || null,
         product_keyword: productKeyword || null,
         notification_channel: notificationChannel,
         is_active: true,
       })
-      .select("*, farm:farms(id, farm_name, city, state)")
+      .select("id, farm_id, category, product_keyword, notification_channel, is_active, created_at, farm:farms(id, farm_name, city, state)")
       .single();
 
     if (insertError || !subscription) {
@@ -149,19 +140,14 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// DELETE: deactivate a subscription by id
+// DELETE: deactivate a subscription (buyer only, must own it)
 export async function DELETE(request: NextRequest) {
   try {
+    // --- RBAC: require buyer role ---
+    const auth = await requireRole("buyer");
+    if (!auth.ok) return auth.response;
+
     const supabase = await createClient();
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
 
     // Accept id from query param or JSON body
     const { searchParams } = request.nextUrl;
@@ -178,12 +164,12 @@ export async function DELETE(request: NextRequest) {
 
     if (!subscriptionId) {
       return NextResponse.json(
-        { error: "Subscription id is required as a query parameter or in the request body" },
+        { error: "Subscription id is required" },
         { status: 400 }
       );
     }
 
-    // Verify ownership
+    // Verify ownership — only select needed fields
     const { data: subscription, error: fetchError } = await supabase
       .from("buyer_subscriptions")
       .select("id, user_id")
@@ -197,14 +183,13 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    if (subscription.user_id !== user.id) {
+    if (subscription.user_id !== auth.user.id) {
       return NextResponse.json(
         { error: "You don't have permission to modify this subscription" },
         { status: 403 }
       );
     }
 
-    // Soft delete: set is_active to false
     const { error: updateError } = await supabase
       .from("buyer_subscriptions")
       .update({ is_active: false })

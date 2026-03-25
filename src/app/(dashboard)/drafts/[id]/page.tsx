@@ -61,6 +61,7 @@ export default function DraftReviewPage() {
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [publishResult, setPublishResult] = useState<{
     listingId: string;
     notifiedCount: number;
@@ -136,7 +137,8 @@ export default function DraftReviewPage() {
   }
 
   async function handleSaveEdits() {
-    if (!draft) return;
+    if (!draft || saving) return;
+    setSaving(true);
     setError(null);
 
     try {
@@ -174,6 +176,8 @@ export default function DraftReviewPage() {
       setPhase("review");
     } catch {
       setError("Failed to save changes. Please try again.");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -210,6 +214,7 @@ export default function DraftReviewPage() {
   }
 
   async function handlePublish() {
+    if (publishing) return; // Prevent duplicate taps
     setPublishing(true);
     setError(null);
 
@@ -650,7 +655,7 @@ export default function DraftReviewPage() {
           >
             Cancel
           </Button>
-          <Button variant="primary" className="flex-1" onClick={handleSaveEdits}>
+          <Button variant="primary" className="flex-1" onClick={handleSaveEdits} loading={saving}>
             <Check className="w-4 h-4" />
             Save Changes
           </Button>
