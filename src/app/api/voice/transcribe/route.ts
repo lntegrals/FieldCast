@@ -68,36 +68,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Upload audio to Supabase Storage
-    const fileName = `${farm.id}/${Date.now()}-${crypto.randomUUID()}.webm`;
+    // Upload audio to Supabase Storage (best-effort — transcription still works without it)
     const arrayBuffer = await audioFile.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    let publicUrl: string | null = null;
 
-    const { error: uploadError } = await serviceClient.storage
-      .from("voice-notes")
-      .upload(fileName, buffer, {
-        contentType: audioFile.type || "audio/webm",
-        upsert: false,
-      });
+    try {
+      const fileName = `${farm.id}/${Date.now()}-${crypto.randomUUID()}.webm`;
+      const { error: uploadError } = await serviceClient.storage
+        .from("voice-notes")
+        .upload(fileName, buffer, {
+          contentType: audioFile.type || "audio/webm",
+          upsert: false,
+        });
 
-    if (uploadError) {
-      console.error("Storage upload error:", uploadError);
-      return NextResponse.json(
-        { error: "Failed to upload audio file" },
-        { status: 500 }
-      );
+      if (uploadError) {
+        console.error("Storage upload error (non-fatal):", uploadError);
+      } else {
+        publicUrl = serviceClient.storage.from("voice-notes").getPublicUrl(fileName).data.publicUrl;
+      }
+    } catch (storageErr) {
+      console.error("Storage upload exception (non-fatal):", storageErr);
     }
-
-    const {
-      data: { publicUrl },
-    } = serviceClient.storage.from("voice-notes").getPublicUrl(fileName);
 
     // Create voice_note record with status "processing"
     const { data: voiceNote, error: vnError } = await serviceClient
       .from("voice_notes")
       .insert({
         farm_id: farm.id,
-        audio_url: publicUrl,
+        audio_url: publicUrl || "",
         transcription_status: "processing",
       })
       .select("id")
