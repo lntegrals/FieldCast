@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { normalizePickupTime } from "@/lib/utils";
 import OpenAI from "openai";
 
 function getOpenAI() {
@@ -189,8 +190,8 @@ export async function POST(request: NextRequest) {
         harvest_date: extractedData.harvest_date as string | null,
         fulfillment_type: extractedData.fulfillment_type as string | null,
         pickup_location: extractedData.pickup_location as string | null,
-        pickup_start_time: extractedData.pickup_start_time as string | null,
-        pickup_end_time: extractedData.pickup_end_time as string | null,
+        pickup_start_time: normalizePickupTime(extractedData.pickup_start_time),
+        pickup_end_time: normalizePickupTime(extractedData.pickup_end_time),
         status: "review",
         ai_confidence: extractedData.ai_confidence as number | null,
         missing_fields_json: extractedData.missing_fields as string[] | null,

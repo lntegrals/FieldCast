@@ -29,7 +29,7 @@ export default async function DashboardPage() {
     .single();
 
   if (!farm) {
-    redirect("/login");
+    redirect("/setup-farm");
   }
 
   // Fetch active listings (not expired)

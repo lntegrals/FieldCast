@@ -55,7 +55,11 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { farmId, category, productKeyword, notificationChannel } = body;
+    // Accept both camelCase and snake_case field names
+    const farmId = body.farmId || body.farm_id;
+    const category = body.category;
+    const productKeyword = body.productKeyword ?? body.product_keyword;
+    const notificationChannel = body.notificationChannel ?? body.notification_channel;
 
     if (!farmId) {
       return NextResponse.json(
@@ -159,12 +163,22 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    // Accept id from query param or JSON body
     const { searchParams } = request.nextUrl;
-    const subscriptionId = searchParams.get("id");
+    let subscriptionId = searchParams.get("id");
+
+    if (!subscriptionId) {
+      try {
+        const body = await request.json();
+        subscriptionId = body.id || null;
+      } catch {
+        // No JSON body provided
+      }
+    }
 
     if (!subscriptionId) {
       return NextResponse.json(
-        { error: "Subscription id is required as a query parameter" },
+        { error: "Subscription id is required as a query parameter or in the request body" },
         { status: 400 }
       );
     }

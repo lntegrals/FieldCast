@@ -19,6 +19,36 @@ export function formatDate(dateStr: string): string {
   });
 }
 
+/**
+ * Normalizes a pickup time value for safe DB insert.
+ * - If HH:MM format, converts to today's ISO timestamp at that time (UTC).
+ * - If already ISO-like, passes through.
+ * - If invalid, returns null.
+ */
+export function normalizePickupTime(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  const str = String(value).trim();
+
+  // HH:MM pattern (e.g. "14:00" or "9:30")
+  const hhmm = /^(\d{1,2}):(\d{2})$/.exec(str);
+  if (hhmm) {
+    const h = parseInt(hhmm[1], 10);
+    const m = parseInt(hhmm[2], 10);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      const today = new Date();
+      today.setUTCHours(h, m, 0, 0);
+      return today.toISOString();
+    }
+    return null;
+  }
+
+  // Already ISO-like — validate it parses
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) return d.toISOString();
+
+  return null;
+}
+
 export function timeAgo(dateStr: string): string {
   const now = new Date();
   const date = new Date(dateStr);

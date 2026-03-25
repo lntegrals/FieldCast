@@ -36,8 +36,8 @@ export default function Header({ user }: HeaderProps) {
   ];
 
   const buyerLinks: NavLink[] = [
-    { label: "Browse", href: "/browse", icon: <ShoppingBasket className="w-4 h-4" /> },
-    { label: "Subscriptions", href: "/subscriptions", icon: <Bell className="w-4 h-4" /> },
+    { label: "Browse", href: "/listings", icon: <ShoppingBasket className="w-4 h-4" /> },
+    { label: "Subscriptions", href: "/subscribe", icon: <Bell className="w-4 h-4" /> },
   ];
 
   const navLinks = user.role === "farmer" ? farmerLinks : buyerLinks;
@@ -52,7 +52,7 @@ export default function Header({ user }: HeaderProps) {
       <div className="max-w-5xl mx-auto px-4">
         <div className="flex items-center justify-between h-14">
           {/* Logo */}
-          <Link href={user.role === "farmer" ? "/dashboard" : "/browse"} className="flex items-center gap-2">
+          <Link href={user.role === "farmer" ? "/dashboard" : "/listings"} className="flex items-center gap-2">
             <div className="w-8 h-8 bg-[#3A7D44] rounded-lg flex items-center justify-center">
               <Sprout className="w-5 h-5 text-white" />
             </div>

@@ -62,6 +62,12 @@ export async function GET(request: NextRequest) {
           "User",
         role,
       });
+    } else if (existingUser.role !== role) {
+      // Reconcile role if user selected a different one
+      await serviceClient
+        .from("users")
+        .update({ role })
+        .eq("id", user.id);
     }
 
     // Redirect based on role - farmer goes to farm setup or dashboard
